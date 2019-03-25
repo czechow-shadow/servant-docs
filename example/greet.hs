@@ -49,7 +49,7 @@ instance ToParam (QueryParam "capital" Bool) where
 instance ToBodyDoc Greet
 instance ToTypeInfo Greet
 instance DescRel Greet GreetDesc
-type GreetDesc = 'TA
+type GreetDesc = "Greet content" ':- 'DescEnd
 
 instance ToSample Greet where
   toSamples _ =

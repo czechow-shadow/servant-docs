@@ -45,7 +45,7 @@ module Servant.Docs
   , ToBodyDoc (..)
   , ToTypeInfo (..)
   , DescRel (..)
-  , TA (..)
+  , DescKind (..)
 
   , -- * ADTs to represent an 'API'
     Endpoint, path, method, defEndpoint

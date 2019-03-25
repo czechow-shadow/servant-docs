@@ -1073,8 +1073,8 @@ genericToBodyDoc _ =
   if length ts == length ds
   then [DocBody (T.unpack tn) (zipWith f ts ds)]
   else error $ "Incompatible lengths for " ++ T.unpack tn
-       ++ ": type fields: " ++ show (length ts) ++ " vs "
-       ++ show (length ds) ++ " description entries)"
+       ++ ": type fields = " ++ show (length ts) ++ " vs "
+       ++ "description entries = " ++ show (length ds) ++ ")"
   where
     ts = toTopList ti
     ds = desc (Proxy :: Proxy b)
@@ -1139,17 +1139,17 @@ setMand v t@TiRecord{tpe} = t { tpe = tpe { mand = v }}
 -------------------------------------------------------------------------------
 --                                TypeDesc
 -------------------------------------------------------------------------------
-data TA = TA -- FIXME: change name
-        | (:-) Symbol TA
-        | (:+) Symbol TA
+data DescKind = DescEnd
+              | (:-) Symbol DescKind
+              | (:+) Symbol DescKind
 infixr 5 :-
 infixr 5 :+
 
 
-class TypeDesc (a :: TA) where
+class TypeDesc (a :: DescKind) where
   desc :: Proxy a -> [String]
 
-instance TypeDesc 'TA where
+instance TypeDesc 'DescEnd where
   desc _ = []
 
 instance (KnownSymbol sym, TypeDesc sub) => TypeDesc (sym ':- sub) where
@@ -1166,7 +1166,7 @@ instance (KnownSymbol sym, TypeDesc sub) => TypeDesc (sym ':+ sub) where
 -------------------------------------------------------------------------------
 --                                   DescRel
 -------------------------------------------------------------------------------
-class DescRel (a :: *) (b :: TA) | a -> b where
+class DescRel (a :: *) (b :: DescKind) | a -> b where
   getDescRel :: Proxy a -> Proxy b
   default getDescRel :: Proxy a -> Proxy b
   getDescRel _ = Proxy :: Proxy b
@@ -1247,7 +1247,7 @@ type MessageDesc =
   ':- "Third attribute"
   ':- DescClientId
   ':- "Optional stuff"
-  ':- 'TA
+  ':- 'DescEnd
 
 
 
@@ -1261,7 +1261,7 @@ instance ToBodyDoc Attachment
 type AttachmentDesc =
       "File name of attachment"
   ':- "Attachment body encoded in base64"
-  ':- 'TA
+  ':- 'DescEnd
 
 
 
