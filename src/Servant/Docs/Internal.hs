@@ -6,7 +6,9 @@
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GADTs                  #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE NamedFieldPuns         #-}
 {-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE PolyKinds              #-}
 {-# LANGUAGE RecordWildCards        #-}
@@ -48,7 +50,7 @@ import           Data.Semigroup             (Semigroup (..))
 import           Data.String.Conversions    (cs)
 import           Data.Text                  (Text, unpack)
 import           GHC.Generics
-import           GHC.TypeLits
+import           GHC.TypeLits               as GHC
 import           Servant.API
 import           Servant.API.ContentTypes
 import           Servant.API.TypeLevel
@@ -145,9 +147,7 @@ data DocQueryParam = DocQueryParam
   , _paramKind   :: ParamKind
   } deriving (Eq, Ord, Show)
 
--- Request -> fields...
--- This may also be used in Responses, ok?
--- FIXME: change name
+
 data DocBodyParam = DocBodyParam
   { _bodyParamName :: String
   , _bodyParamType :: String
@@ -155,15 +155,9 @@ data DocBodyParam = DocBodyParam
   , _bodyParamDesc :: String
   } deriving (Eq, Ord, Show)
 
-data BodyDoc = BodyDoc
-  { _bodyDocName :: String
-  , _bodyDocParams :: [DocBodyParam]
-  } deriving (Eq, Ord, Show)
-
--- This is Rose Tree
 data DocBody = DocBody
-  { _bodyDoc :: BodyDoc
-  , _bodyDocs :: [BodyDoc]
+  { _docBodyName   :: String
+  , _docBodyParams :: [DocBodyParam]
   } deriving (Eq, Ord, Show)
 
 
@@ -272,16 +266,17 @@ defResponse = Response
 -- You can tweak an 'Action' (like the default 'defAction') with these lenses
 -- to transform an action and add some information to it.
 data Action = Action
-  { _authInfo :: [DocAuthentication]         -- user supplied info
-  , _captures :: [DocCapture]                -- type collected + user supplied info
-  , _headers  :: [Text]                      -- type collected
-  , _params   :: [DocQueryParam]             -- type collected + user supplied info
-  , _notes    :: [DocNote]                   -- user supplied
-  , _mxParams :: [(String, [DocQueryParam])] -- type collected + user supplied info
-  , _rqtypes  :: [M.MediaType]               -- type collected
-  , _rqbody   :: [(Text, M.MediaType, ByteString)] -- user supplied
-  , _rqDocBody :: Maybe DocBody
-  , _response :: Response                    -- user supplied
+  { _authInfo  :: [DocAuthentication]         -- user supplied info
+  , _captures  :: [DocCapture]                -- type collected + user supplied info
+  , _headers   :: [Text]                      -- type collected
+  , _params    :: [DocQueryParam]             -- type collected + user supplied info
+  , _notes     :: [DocNote]                   -- user supplied
+  , _mxParams  :: [(String, [DocQueryParam])] -- type collected + user supplied info
+  , _rqtypes   :: [M.MediaType]               -- type collected
+  , _rqbody    :: [(Text, M.MediaType, ByteString)] -- user supplied
+  , _rqDocBody :: [DocBody]                   -- request body
+  , _rpDocBody :: [DocBody]                   -- response body
+  , _response  :: Response                    -- user supplied
   } deriving (Eq, Ord, Show)
 
 -- | Combine two Actions, we can't make a monoid as merging Response breaks the
@@ -291,10 +286,10 @@ data Action = Action
 -- 'combineAction' to mush two together taking the response, body and content
 -- types from the very left.
 combineAction :: Action -> Action -> Action
-Action a c h p n m ts body rqbparams resp
-  `combineAction` Action a' c' h' p' n' m' _ _ _ _ =
+Action a c h p n m ts body rqbparams rpbparams resp
+  `combineAction` Action a' c' h' p' n' m' _ _ _ _ _ =
         Action (a <> a') (c <> c') (h <> h') (p <> p') (n <> n') (m <> m')
-        ts body rqbparams resp
+        ts body rqbparams rpbparams resp
 
 -- | Default 'Action'. Has no 'captures', no query 'params', expects
 -- no request body ('rqbody') and the typical response is 'defResponse'.
@@ -315,7 +310,8 @@ defAction =
          []
          []
          []
-         Nothing
+         []
+         []
          defResponse
 
 -- | Create an API that's comprised of a single endpoint.
@@ -765,13 +761,13 @@ markdownWith RenderingOptions{..}  api = unlines $
 
         markdownForType mime_type =
             case (M.mainType mime_type, M.subType mime_type) of
-                ("text", "html") -> "html"
-                ("application", "xml") -> "xml"
-                ("text", "xml") -> "xml"
-                ("application", "json") -> "javascript"
+                ("text", "html")              -> "html"
+                ("application", "xml")        -> "xml"
+                ("text", "xml")               -> "xml"
+                ("application", "json")       -> "javascript"
                 ("application", "javascript") -> "javascript"
-                ("text", "css") -> "css"
-                (_, _) -> ""
+                ("text", "css")               -> "css"
+                (_, _)                        -> ""
 
 
         contentStr mime_type body =
@@ -954,7 +950,8 @@ instance (KnownSymbol desc, HasDocs api)
 -- example data. However, there's no reason to believe that the instances of
 -- 'AllMimeUnrender' and 'AllMimeRender' actually agree (or to suppose that
 -- both are even defined) for any particular type.
-instance (ToSample a, AllMimeRender (ct ': cts) a, HasDocs api)
+instance (ToBodyDoc a, ToTypeInfo a, TypeDesc b, DescRel a b,
+          ToSample a, AllMimeRender (ct ': cts) a, HasDocs api)
       => HasDocs (ReqBody' mods (ct ': cts) a :> api) where
 
   docsFor Proxy (endpoint, action) opts@DocOptions{..} =
@@ -964,12 +961,9 @@ instance (ToSample a, AllMimeRender (ct ': cts) a, HasDocs api)
           action' :: Action
           action' = action & rqbody .~ take _maxSamples (sampleByteStrings t p)
                            & rqtypes .~ allMime t
-                           & rqDocBody .~ Just
-                           (DocBody (BodyDoc "Request" $ mkDocBodyParams p) [])
+                           & rqDocBody .~ toBodyDoc p
           t = Proxy :: Proxy (ct ': cts)
           p = Proxy :: Proxy a
-          mkDocBodyParams :: Proxy a -> [DocBodyParam]
-          mkDocBodyParams = undefined
 
 instance (KnownSymbol path, HasDocs api) => HasDocs (path :> api) where
 
@@ -1035,3 +1029,239 @@ instance ToSample a => ToSample (Product a)
 instance ToSample a => ToSample (First a)
 instance ToSample a => ToSample (Last a)
 instance ToSample a => ToSample (Dual a)
+
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+
+newtype TName = TName { unTName :: Text } deriving Show
+newtype FName = FName { unFName :: Text } deriving Show
+
+data TCard = TcOne
+           | TcMany
+           | TcManyUnique
+           deriving (Eq, Show)
+
+data TInfo = TInfo { tname :: !TName
+                   , mand  :: !Bool
+                   , card  :: !TCard
+                   } deriving Show
+
+
+data TypeInfo = TiSimple { tpe :: !TInfo }
+              | TiRecord { tpe :: !TInfo, fields :: [Field] }
+              deriving (Show)
+
+data Field = Field { name     :: FName
+                   , typeInfo :: TypeInfo
+                   } deriving Show
+
+-------------------------------------------------------------------------------
+--                               ToBodyDoc
+-------------------------------------------------------------------------------
+
+class ToBodyDoc a where
+  toBodyDoc :: (ToTypeInfo a, TypeDesc b, DescRel a b)
+            => Proxy a -> [DocBody]
+  default toBodyDoc :: (ToTypeInfo a, TypeDesc b, DescRel a b)
+                    => Proxy a -> [DocBody]
+  toBodyDoc _ = genericToBodyDoc (Proxy :: Proxy a)
+
+genericToBodyDoc :: forall a b. (ToTypeInfo a, TypeDesc b, DescRel a b)
+                 => Proxy a -> [DocBody]
+genericToBodyDoc _ =
+  if length ts == length ds
+  then [DocBody (T.unpack tn) (zipWith f ts ds)]
+  else error $ "Incompatible lengths for " ++ T.unpack tn
+       ++ ": type fields: " ++ show (length ts) ++ " vs "
+       ++ show (length ds) ++ " description entries)"
+  where
+    ts = toTopList ti
+    ds = desc (Proxy :: Proxy b)
+    ti = toTypeInfo (Proxy :: Proxy a)
+    tn = unTName $ tname $ recTypeInfo ti
+
+    f (FName fname, TInfo{tname, mand, card}) desc' =
+      DocBodyParam (T.unpack fname)
+                   (mkType card $ T.unpack $ unTName tname) mand desc'
+      where
+        mkType TcOne t        = t
+        mkType TcMany t       = "[" ++ t ++ "]"
+        mkType TcManyUnique t = "{" ++ t ++ "}"
+
+
+    toTopList :: TypeInfo -> [(FName, TInfo)]
+    toTopList TiSimple{} = []
+    toTopList TiRecord{fields} =
+      map (\Field{name, typeInfo} -> (name, recTypeInfo typeInfo)) fields
+    recTypeInfo :: TypeInfo -> TInfo
+    recTypeInfo TiSimple{tpe} = tpe
+    recTypeInfo TiRecord{tpe} = tpe
+
+-------------------------------------------------------------------------------
+--                                 ToTypeInfo
+-------------------------------------------------------------------------------
+class ToTypeInfo (a :: *) where
+  toTypeInfo :: Proxy a -> TypeInfo
+  default toTypeInfo :: (Generic a, GToTypeInfo (Rep a)) => Proxy a -> TypeInfo
+  toTypeInfo _ = gtoTypeInfo (Proxy :: Proxy (Rep a))
+
+
+instance ToTypeInfo a => ToTypeInfo (Maybe a) where
+  toTypeInfo _ = toTypeInfo (Proxy :: Proxy a)
+                 & setMand False
+
+
+instance ToTypeInfo a => ToTypeInfo [a] where
+  toTypeInfo _ = toTypeInfo (Proxy :: Proxy a)
+                 & setCard TcMany
+                 & setMand True
+
+instance ToTypeInfo Int where
+  toTypeInfo _ = TiSimple (TInfo {tname = name, mand = True, card = TcOne})
+    where
+      name = TName "number"
+
+instance ToTypeInfo Text where
+  toTypeInfo _ = TiSimple (TInfo {tname = name, mand = True, card = TcOne})
+    where
+      name = TName "string"
+
+
+setCard :: TCard -> TypeInfo -> TypeInfo
+setCard v t@TiSimple{tpe} = t { tpe = tpe { card = v }}
+setCard v t@TiRecord{tpe} = t { tpe = tpe { card = v }}
+
+setMand :: Bool -> TypeInfo -> TypeInfo
+setMand v t@TiSimple{tpe} = t { tpe = tpe { mand = v }}
+setMand v t@TiRecord{tpe} = t { tpe = tpe { mand = v }}
+
+-------------------------------------------------------------------------------
+--                                TypeDesc
+-------------------------------------------------------------------------------
+data TA = TA -- FIXME: change name
+        | (:-) Symbol TA
+        | (:+) Symbol TA
+infixr 5 :-
+infixr 5 :+
+
+
+class TypeDesc (a :: TA) where
+  desc :: Proxy a -> [String]
+
+instance TypeDesc 'TA where
+  desc _ = []
+
+instance (KnownSymbol sym, TypeDesc sub) => TypeDesc (sym ':- sub) where
+  desc _ = symbolVal (Proxy :: Proxy sym) : desc (Proxy :: Proxy sub)
+
+-- concatenation
+instance (KnownSymbol sym, TypeDesc sub) => TypeDesc (sym ':+ sub) where
+  desc _ = case desc (Proxy :: Proxy sub) of
+    []     -> [sv]
+    (x:xs) -> (sv ++ x) : xs
+    where
+      sv = symbolVal (Proxy :: Proxy sym)
+
+-------------------------------------------------------------------------------
+--                                   DescRel
+-------------------------------------------------------------------------------
+class DescRel (a :: *) (b :: TA) | a -> b where
+  getDescRel :: Proxy a -> Proxy b
+  default getDescRel :: Proxy a -> Proxy b
+  getDescRel _ = Proxy :: Proxy b
+
+-------------------------------------------------------------------------------
+--                                 GToTypeInfo
+-------------------------------------------------------------------------------
+class GToTypeInfo (rep :: * -> *) where
+  gtoTypeInfo :: Proxy rep -> TypeInfo
+
+
+instance (KnownSymbol t, GToSumInfo f)
+      => GToTypeInfo (D1 ('MetaData t a b c) f) where
+  gtoTypeInfo _ = TiRecord ti fields
+    where
+      ti = TInfo {tname = tn, mand = True, card = TcOne}
+      tn = TName $ T.pack $ symbolVal (Proxy :: Proxy t)
+      fields = gtoSumInfo (Proxy :: Proxy f)
+
+
+
+class GToSumInfo (rep :: * -> *) where
+  gtoSumInfo :: Proxy rep -> [Field]
+
+instance TypeError ('GHC.Text "Sum types cannot be derived generically")
+      => GToSumInfo (p :+: q) where
+  gtoSumInfo = gtoSumInfo -- unreachable
+
+instance GToProdInfo f => GToSumInfo (C1 ('MetaCons a b 'True) f) where
+  gtoSumInfo _ = gtoProdInfo (Proxy :: Proxy f)
+
+instance TypeError ('GHC.Text "Non-record types cannot be derived generically")
+      => GToSumInfo (C1 ('MetaCons a b 'False) f) where
+  gtoSumInfo = gtoSumInfo -- unreachable
+
+
+class GToProdInfo (rep :: * -> *) where
+  gtoProdInfo :: Proxy rep -> [Field]
+
+instance (GToProdInfo p, GToProdInfo q) => GToProdInfo (p :*: q) where
+  gtoProdInfo _ =
+    gtoProdInfo (Proxy :: Proxy p) ++ gtoProdInfo (Proxy :: Proxy q)
+
+instance (KnownSymbol fn, ToTypeInfo t)
+      => GToProdInfo (S1 ('MetaSel ('Just fn) a b c) (K1 R t)) where
+  gtoProdInfo _= [Field name ti]
+    where
+      name = FName $ T.pack $ symbolVal (Proxy :: Proxy fn)
+      ti = toTypeInfo (Proxy :: Proxy t)
+
+-------------------------------------------------------------------------------
+--                              Example usage
+-------------------------------------------------------------------------------
+go :: IO ()
+go = do
+  mapM_ (putStrLn . show) $ toBodyDoc (Proxy :: Proxy Message)
+
+
+data Message = Message { fromUser   :: Text
+                       , toUser     :: Text
+                       , body       :: Text
+                       , attachment :: Maybe [Attachment]
+                       , super      :: Maybe Text
+                       } deriving Generic
+
+instance ToTypeInfo Message
+instance DescRel Message MessageDesc
+instance ToBodyDoc Message where
+  toBodyDoc _ = genericToBodyDoc (Proxy :: Proxy Message)
+             ++ toBodyDoc (Proxy :: Proxy Attachment)
+
+type DescClientId = "Unique client identifier"
+type MessageDesc =
+      "A description that can be made multiple lines "
+      ':+ "and is continued here..."
+  ':- "Second description starts here"
+      ':+ " and is continued here"
+  ':- "Third attribute"
+  ':- DescClientId
+  ':- "Optional stuff"
+  ':- 'TA
+
+
+
+data Attachment = Attachment { aname :: Text
+                             , abody :: Text
+                             } deriving Generic
+instance ToTypeInfo Attachment
+instance DescRel Attachment AttachmentDesc
+instance ToBodyDoc Attachment
+
+type AttachmentDesc =
+      "File name of attachment"
+  ':- "Attachment body encoded in base64"
+  ':- 'TA
+
+
+

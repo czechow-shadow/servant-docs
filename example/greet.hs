@@ -5,19 +5,19 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
-import Control.Lens
-import Data.Aeson
-import Data.Proxy
-import Data.String.Conversions
-import Data.Text (Text)
-import GHC.Generics
-import Servant.API
-import Servant.Docs
+import           Control.Lens
+import           Data.Aeson
+import           Data.Proxy
+import           Data.String.Conversions
+import           Data.Text               (Text)
+import           GHC.Generics
+import           Servant.API
+import           Servant.Docs
 
 -- * Example
 
 -- | A greet message data type
-newtype Greet = Greet Text
+newtype Greet = Greet { unGreet :: Text }
   deriving (Generic, Show)
 
 -- | We can get JSON support automatically. This will be used to parse
@@ -45,6 +45,11 @@ instance ToParam (QueryParam "capital" Bool) where
                   "Get the greeting message in uppercase (true) or not (false).\
                   \Default is false."
                   Normal
+
+instance ToBodyDoc Greet
+instance ToTypeInfo Greet
+instance DescRel Greet GreetDesc
+type GreetDesc = 'TA
 
 instance ToSample Greet where
   toSamples _ =

@@ -42,6 +42,10 @@ module Servant.Docs
   , sampleByteStrings
   , ToParam(..)
   , ToCapture(..)
+  , ToBodyDoc (..)
+  , ToTypeInfo (..)
+  , DescRel (..)
+  , TA (..)
 
   , -- * ADTs to represent an 'API'
     Endpoint, path, method, defEndpoint
